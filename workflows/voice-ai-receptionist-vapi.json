@@ -1,0 +1,857 @@
+{
+  "name": "Voice AI Receptionist - Vapi + Calendar",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vapi-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-vapi-trigger",
+      "name": "Vapi Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "vapi-voice-ai"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "call-type-check",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "assistant-request",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-vapi-event-type",
+      "name": "Check Event Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "extract-caller",
+              "name": "caller_phone",
+              "value": "={{ $json.call?.customer?.number || 'Unknown' }}",
+              "type": "string"
+            },
+            {
+              "id": "extract-message",
+              "name": "caller_message",
+              "value": "={{ $json.message?.content || $json.transcript || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "extract-call-id",
+              "name": "call_id",
+              "value": "={{ $json.call?.id || $json.callId }}",
+              "type": "string"
+            },
+            {
+              "id": "extract-intent",
+              "name": "intent",
+              "value": "={{ $json.message?.toolCalls?.[0]?.function?.name || 'general_inquiry' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "extract-call-data",
+      "name": "Extract Call Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "check-booking-intent",
+              "leftValue": "={{ $json.intent }}",
+              "rightValue": "book_appointment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "route-by-intent",
+      "name": "Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "get",
+        "calendarId": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list",
+          "cachedResultName": "Primary"
+        },
+        "start": "={{ $now.toISO() }}",
+        "end": "={{ $now.plus({ days: 14 }).toISO() }}",
+        "returnAll": true,
+        "options": {}
+      },
+      "id": "get-calendar-availability",
+      "name": "Check Calendar Availability",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [1120, 180],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "GOOGLE_CALENDAR_OAUTH_ID",
+          "name": "Google Calendar - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse caller's requested date/time from message\nconst message = $input.first().json.caller_message.toLowerCase();\nconst existingEvents = $input.all().slice(1); // Calendar events from second input\n\n// Extract date/time intent from message (simplified - you can enhance with better NLP)\nlet requestedDate = new Date();\nlet requestedHour = 10; // Default to 10 AM\n\n// Check if message mentions specific days\nif (message.includes('tomorrow')) {\n  requestedDate.setDate(requestedDate.getDate() + 1);\n} else if (message.includes('monday')) {\n  const today = requestedDate.getDay();\n  const daysUntilMonday = (1 - today + 7) % 7 || 7;\n  requestedDate.setDate(requestedDate.getDate() + daysUntilMonday);\n} else if (message.includes('tuesday')) {\n  const today = requestedDate.getDay();\n  const daysUntilTuesday = (2 - today + 7) % 7 || 7;\n  requestedDate.setDate(requestedDate.getDate() + daysUntilTuesday);\n} else if (message.includes('wednesday')) {\n  const today = requestedDate.getDay();\n  const daysUntilWed = (3 - today + 7) % 7 || 7;\n  requestedDate.setDate(requestedDate.getDate() + daysUntilWed);\n} else if (message.includes('thursday')) {\n  const today = requestedDate.getDay();\n  const daysUntilThu = (4 - today + 7) % 7 || 7;\n  requestedDate.setDate(requestedDate.getDate() + daysUntilThu);\n} else if (message.includes('friday')) {\n  const today = requestedDate.getDay();\n  const daysUntilFri = (5 - today + 7) % 7 || 7;\n  requestedDate.setDate(requestedDate.getDate() + daysUntilFri);\n}\n\n// Extract time if mentioned\nconst timeMatch = message.match(/(\\d{1,2})\\s*(am|pm|a\\.m\\.|p\\.m\\.)/i);\nif (timeMatch) {\n  requestedHour = parseInt(timeMatch[1]);\n  if (timeMatch[2].toLowerCase().includes('pm') && requestedHour !== 12) {\n    requestedHour += 12;\n  }\n  if (timeMatch[2].toLowerCase().includes('am') && requestedHour === 12) {\n    requestedHour = 0;\n  }\n}\n\n// Set requested appointment time\nrequested = new Date(requestedDate);\nrequested.setHours(requestedHour, 0, 0, 0);\n\n// Check for conflicts\nconst appointmentDuration = 60 * 60 * 1000; // 1 hour in milliseconds\nconst requestedEnd = new Date(requested.getTime() + appointmentDuration);\n\nlet hasConflict = false;\nlet conflictingEvent = null;\n\nfor (const event of existingEvents) {\n  if (event.json.status === 'cancelled') continue;\n  \n  const eventStart = new Date(event.json.start.dateTime || event.json.start.date);\n  const eventEnd = new Date(event.json.end.dateTime || event.json.end.date);\n  \n  // Check for overlap\n  if (requested < eventEnd && requestedEnd > eventStart) {\n    hasConflict = true;\n    conflictingEvent = event.json;\n    break;\n  }\n}\n\n// Find alternative slots if there's a conflict\nconst alternatives = [];\nif (hasConflict) {\n  // Generate 3 alternative time slots\n  for (let i = 1; i <= 3; i++) {\n    const altDate = new Date(requested);\n    altDate.setHours(requested.getHours() + (i * 2)); // 2 hours apart\n    \n    const altEnd = new Date(altDate.getTime() + appointmentDuration);\n    let altConflict = false;\n    \n    for (const event of existingEvents) {\n      if (event.json.status === 'cancelled') continue;\n      const eventStart = new Date(event.json.start.dateTime || event.json.start.date);\n      const eventEnd = new Date(event.json.end.dateTime || event.json.end.date);\n      \n      if (altDate < eventEnd && altEnd > eventStart) {\n        altConflict = true;\n        break;\n      }\n    }\n    \n    if (!altConflict) {\n      alternatives.push({\n        start: altDate.toISOString(),\n        end: altEnd.toISOString(),\n        formatted: altDate.toLocaleString('en-US', { \n          weekday: 'long', \n          hour: 'numeric', \n          minute: '2-digit',\n          hour12: true \n        })\n      });\n    }\n  }\n}\n\nreturn {\n  requested_start: requested.toISOString(),\n  requested_end: requestedEnd.toISOString(),\n  has_conflict: hasConflict,\n  conflicting_event: conflictingEvent,\n  alternative_slots: alternatives,\n  can_book: !hasConflict\n};"
+      },
+      "id": "analyze-availability",
+      "name": "Analyze Availability",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "can-book-check",
+              "leftValue": "={{ $json.can_book }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-can-book",
+      "name": "Can Book?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 180]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "create",
+        "calendarId": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list",
+          "cachedResultName": "Primary"
+        },
+        "start": "={{ $json.requested_start }}",
+        "end": "={{ $json.requested_end }}",
+        "summary": "Appointment - {{ $('Extract Call Data').item.json.caller_phone }}",
+        "description": "Booked via Voice AI\\n\\nCaller: {{ $('Extract Call Data').item.json.caller_phone }}\\nMessage: {{ $('Extract Call Data').item.json.caller_message }}\\nCall ID: {{ $('Extract Call Data').item.json.call_id }}",
+        "attendees": "",
+        "options": {
+          "sendUpdates": "all"
+        }
+      },
+      "id": "create-appointment",
+      "name": "Book Appointment",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [1780, 80],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "GOOGLE_CALENDAR_OAUTH_ID",
+          "name": "Google Calendar - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format response for Vapi to speak to caller\nconst appointmentData = $input.first().json;\nconst callerData = $('Extract Call Data').item.json;\n\nconst startTime = new Date(appointmentData.start.dateTime);\nconst formattedTime = startTime.toLocaleString('en-US', {\n  weekday: 'long',\n  month: 'long',\n  day: 'numeric',\n  hour: 'numeric',\n  minute: '2-digit',\n  hour12: true\n});\n\nreturn {\n  response: {\n    type: 'assistant-response',\n    message: `Perfect! I've booked your appointment for ${formattedTime}. You'll receive a confirmation email shortly. Is there anything else I can help you with?`,\n    action: 'appointment_booked',\n    appointment: {\n      id: appointmentData.id,\n      start: appointmentData.start.dateTime,\n      end: appointmentData.end.dateTime,\n      link: appointmentData.htmlLink\n    }\n  }\n};"
+      },
+      "id": "format-booking-success",
+      "name": "Format Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format response with alternative time slots\nconst availabilityData = $input.first().json;\nconst callerData = $('Extract Call Data').item.json;\n\nlet message = \"I'm sorry, but that time slot is already booked. \";\n\nif (availabilityData.alternative_slots && availabilityData.alternative_slots.length > 0) {\n  message += \"Here are some alternative times I have available: \";\n  \n  availabilityData.alternative_slots.forEach((slot, index) => {\n    if (index === 0) {\n      message += slot.formatted;\n    } else if (index === availabilityData.alternative_slots.length - 1) {\n      message += `, or ${slot.formatted}`;\n    } else {\n      message += `, ${slot.formatted}`;\n    }\n  });\n  \n  message += \". Which time works best for you?\";\n} else {\n  message += \"Let me check my calendar for other available times. What dates work for you?\";\n}\n\nreturn {\n  response: {\n    type: 'assistant-response',\n    message: message,\n    action: 'suggest_alternatives',\n    alternatives: availabilityData.alternative_slots\n  }\n};"
+      },
+      "id": "format-alternatives",
+      "name": "Suggest Alternatives",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 280]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "channelId": {
+          "__rl": true,
+          "value": "C07XXXXXXXXX",
+          "mode": "list",
+          "cachedResultName": "general"
+        },
+        "text": "=:phone: *New Appointment Booked*\\n\\n*Caller:* {{ $('Extract Call Data').item.json.caller_phone }}\\n*Time:* {{ new Date($json.response.appointment.start).toLocaleString() }}\\n*Call ID:* {{ $('Extract Call Data').item.json.call_id }}\\n*Message:* {{ $('Extract Call Data').item.json.caller_message }}\\n\\n<{{ $json.response.appointment.link }}|View in Calendar>",
+        "otherOptions": {}
+      },
+      "id": "notify-slack-booking",
+      "name": "Notify Slack - Booked",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [2220, 80],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "SLACK_OAUTH_ID",
+          "name": "Slack - Notifications"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "check-cancel-intent",
+              "leftValue": "={{ $json.intent }}",
+              "rightValue": "cancel_appointment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-cancel",
+      "name": "Cancel Intent?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1120, 420]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "get",
+        "calendarId": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list",
+          "cachedResultName": "Primary"
+        },
+        "start": "={{ $now.minus({ days: 1 }).toISO() }}",
+        "end": "={{ $now.plus({ days: 30 }).toISO() }}",
+        "returnAll": true,
+        "options": {
+          "query": "={{ $('Extract Call Data').item.json.caller_phone }}"
+        }
+      },
+      "id": "find-appointments",
+      "name": "Find Caller's Appointments",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [1340, 420],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "GOOGLE_CALENDAR_OAUTH_ID",
+          "name": "Google Calendar - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "delete",
+        "calendarId": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list",
+          "cachedResultName": "Primary"
+        },
+        "eventId": "={{ $json.id }}",
+        "options": {
+          "sendUpdates": "all"
+        }
+      },
+      "id": "cancel-appointment",
+      "name": "Cancel Appointment",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [1560, 420],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "GOOGLE_CALENDAR_OAUTH_ID",
+          "name": "Google Calendar - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format cancellation response\nconst cancelledEvent = $input.first().json;\nconst callerData = $('Extract Call Data').item.json;\n\nreturn {\n  response: {\n    type: 'assistant-response',\n    message: \"I've cancelled your appointment. Is there anything else I can help you with?\",\n    action: 'appointment_cancelled',\n    cancelled_event_id: cancelledEvent.id\n  }\n};"
+      },
+      "id": "format-cancel-response",
+      "name": "Format Cancel Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 420]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "channelId": {
+          "__rl": true,
+          "value": "C07XXXXXXXXX",
+          "mode": "list",
+          "cachedResultName": "general"
+        },
+        "text": "=:no_entry_sign: *Appointment Cancelled*\\n\\n*Caller:* {{ $('Extract Call Data').item.json.caller_phone }}\\n*Event ID:* {{ $json.response.cancelled_event_id }}\\n*Call ID:* {{ $('Extract Call Data').item.json.call_id }}",
+        "otherOptions": {}
+      },
+      "id": "notify-slack-cancel",
+      "name": "Notify Slack - Cancelled",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [2000, 420],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "SLACK_OAUTH_ID",
+          "name": "Slack - Notifications"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "appXXXXXXXXXXXXXX",
+          "mode": "list",
+          "cachedResultName": "Appointments"
+        },
+        "table": {
+          "__rl": true,
+          "value": "tblXXXXXXXXXXXXXX",
+          "mode": "list",
+          "cachedResultName": "Calls"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Caller Phone": "={{ $('Extract Call Data').item.json.caller_phone }}",
+            "Call ID": "={{ $('Extract Call Data').item.json.call_id }}",
+            "Intent": "={{ $('Extract Call Data').item.json.intent }}",
+            "Message": "={{ $('Extract Call Data').item.json.caller_message }}",
+            "Appointment Start": "={{ $json.response.appointment?.start }}",
+            "Appointment ID": "={{ $json.response.appointment?.id }}",
+            "Status": "=Booked",
+            "Timestamp": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "save-to-airtable",
+      "name": "Log to Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2220, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "AIRTABLE_TOKEN_ID",
+          "name": "Airtable - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "your-email@gmail.com",
+        "toEmail": "={{ $('Extract Call Data').item.json.caller_email || 'your-email@gmail.com' }}",
+        "subject": "Appointment Confirmation",
+        "emailType": "html",
+        "message": "=<html>\\n<body style=\"font-family: Arial, sans-serif; line-height: 1.6; color: #333;\">\\n  <div style=\"max-width: 600px; margin: 0 auto; padding: 20px;\">\\n    <h2 style=\"color: #2563eb;\">Appointment Confirmed</h2>\\n    \\n    <p>Thank you for scheduling an appointment!</p>\\n    \\n    <div style=\"background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;\">\\n      <p><strong>Date & Time:</strong><br>\\n      {{ new Date($json.response.appointment.start).toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) }}</p>\\n      \\n      <p><strong>Duration:</strong> 1 hour</p>\\n    </div>\\n    \\n    <p>You can view and manage this appointment in your calendar:</p>\\n    <p><a href=\"{{ $json.response.appointment.link }}\" style=\"color: #2563eb;\">View in Google Calendar</a></p>\\n    \\n    <hr style=\"border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;\">\\n    \\n    <p style=\"font-size: 12px; color: #6b7280;\">\\n      If you need to cancel or reschedule, please call us back.<br>\\n      This is an automated confirmation from our AI receptionist.\\n    </p>\\n  </div>\\n</body>\\n</html>",
+        "options": {}
+      },
+      "id": "send-confirmation-email",
+      "name": "Send Confirmation Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2220, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GMAIL_OAUTH_ID",
+          "name": "Gmail - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {}
+      },
+      "id": "respond-to-vapi",
+      "name": "Respond to Vapi",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2440, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// General response for other intents\nconst callerData = $input.first().json;\n\nreturn {\n  response: {\n    type: 'assistant-response',\n    message: \"Hello! I'm your AI receptionist. I can help you book an appointment, check availability, or reschedule. How can I assist you today?\",\n    action: 'general_inquiry'\n  }\n};"
+      },
+      "id": "general-response",
+      "name": "General Inquiry Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 620]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "check-reschedule",
+              "leftValue": "={{ $json.intent }}",
+              "rightValue": "reschedule_appointment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-reschedule",
+      "name": "Reschedule Intent?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1120, 780]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "get",
+        "calendarId": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list",
+          "cachedResultName": "Primary"
+        },
+        "start": "={{ $now.minus({ days: 1 }).toISO() }}",
+        "end": "={{ $now.plus({ days: 30 }).toISO() }}",
+        "returnAll": true,
+        "options": {
+          "query": "={{ $('Extract Call Data').item.json.caller_phone }}"
+        }
+      },
+      "id": "find-appointments-reschedule",
+      "name": "Find Appointments to Reschedule",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [1340, 780],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "GOOGLE_CALENDAR_OAUTH_ID",
+          "name": "Google Calendar - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "update",
+        "calendarId": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list",
+          "cachedResultName": "Primary"
+        },
+        "eventId": "={{ $json.id }}",
+        "updateFields": {
+          "start": "={{ $('Analyze Availability').item.json.requested_start }}",
+          "end": "={{ $('Analyze Availability').item.json.requested_end }}"
+        },
+        "options": {
+          "sendUpdates": "all"
+        }
+      },
+      "id": "update-appointment",
+      "name": "Update Appointment",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [1560, 780],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "GOOGLE_CALENDAR_OAUTH_ID",
+          "name": "Google Calendar - Main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Clean and extract email from messy text\nconst message = $input.first().json.caller_message || '';\n\n// Common email patterns to extract\nconst emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;\nconst emails = message.match(emailRegex) || [];\n\n// Clean phone numbers\nconst phoneRegex = /\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}/g;\nconst phones = message.match(phoneRegex) || [];\n\n// Extract names (basic pattern - can be enhanced)\nconst namePatterns = [\n  /my name is ([A-Z][a-z]+(?: [A-Z][a-z]+)*)/i,\n  /I'm ([A-Z][a-z]+(?: [A-Z][a-z]+)*)/i,\n  /this is ([A-Z][a-z]+(?: [A-Z][a-z]+)*)/i\n];\n\nlet extractedName = '';\nfor (const pattern of namePatterns) {\n  const match = message.match(pattern);\n  if (match) {\n    extractedName = match[1];\n    break;\n  }\n}\n\nreturn {\n  cleaned_email: emails[0] || null,\n  cleaned_phone: phones[0] ? phones[0].replace(/\\D/g, '') : null,\n  extracted_name: extractedName || null,\n  original_message: message,\n  has_contact_info: emails.length > 0 || phones.length > 0\n};"
+      },
+      "id": "clean-email-extraction",
+      "name": "Clean Email & Extract Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 500]
+    }
+  ],
+  "connections": {
+    "Vapi Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Event Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Event Type": {
+      "main": [
+        [
+          {
+            "node": "Extract Call Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Call Data": {
+      "main": [
+        [
+          {
+            "node": "Route by Intent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Clean Email & Extract Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Intent": {
+      "main": [
+        [
+          {
+            "node": "Check Calendar Availability",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancel Intent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Calendar Availability": {
+      "main": [
+        [
+          {
+            "node": "Analyze Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Availability": {
+      "main": [
+        [
+          {
+            "node": "Can Book?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can Book?": {
+      "main": [
+        [
+          {
+            "node": "Book Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Suggest Alternatives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Book Appointment": {
+      "main": [
+        [
+          {
+            "node": "Format Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Success Response": {
+      "main": [
+        [
+          {
+            "node": "Notify Slack - Booked",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Airtable",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Confirmation Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Suggest Alternatives": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Slack - Booked": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Intent?": {
+      "main": [
+        [
+          {
+            "node": "Find Caller's Appointments",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reschedule Intent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Caller's Appointments": {
+      "main": [
+        [
+          {
+            "node": "Cancel Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Appointment": {
+      "main": [
+        [
+          {
+            "node": "Format Cancel Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Cancel Response": {
+      "main": [
+        [
+          {
+            "node": "Notify Slack - Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Slack - Cancelled": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Airtable": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation Email": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "General Inquiry Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reschedule Intent?": {
+      "main": [
+        [
+          {
+            "node": "Find Appointments to Reschedule",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "General Inquiry Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Appointments to Reschedule": {
+      "main": [
+        [
+          {
+            "node": "Update Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Appointment": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-30T00:00:00.000Z",
+  "versionId": "1"
+}
