@@ -5,11 +5,16 @@ Usage:
     python main.py          # text mode (default)
     python main.py --voice  # start in voice mode
 ─────────────────────────────────────────────────
-Commands inside the app:
+Commands (text or voice):
     voice       – toggle voice input on/off
+    talk        – one-shot speech capture (text mode)
+    mics        – list available microphones
     clear       – clear conversation memory
+    help        – show command list
     quit/exit   – shut down JARVIS
+─────────────────────────────────────────────────
 """
+
 import argparse
 import sys
 import time
@@ -36,10 +41,149 @@ BANNER = r"""
   ║   Just A Rather Very Intelligent System  v1.0           ║
   ║   Powered by GPT-4o · Brave · Fish.audio · Google       ║
   ╠══════════════════════════════════════════════════════════╣
-  ║  Commands:  voice | clear | quit                         ║
+  ║  Commands:  voice | talk | mics | clear | help | quit   ║
   ╚══════════════════════════════════════════════════════════╝
 """
 
+HELP_TEXT = """
+  Commands:
+    voice  – toggle voice input on/off
+    talk   – one-shot mic capture (text mode only)
+    mics   – list available microphones
+    clear  – wipe conversation memory
+    help   – show this message
+    quit   – shut down JARVIS
+"""
+
+
+# ── voice-mode state ──────────────────────────────────────────────────────────
+
+class VoiceState:
+    """Holds mutable voice-mode state so it can be passed around cleanly."""
+
+    def __init__(self) -> None:
+        self.active: bool = False
+        self.bg_queue = None          # Queue | None
+        self.bg_stop = None           # callable | None
+        self.use_fallback: bool = False   # True → use blocking listen()
+
+    def start(self) -> str | None:
+        """
+        Activate voice mode. Returns an error string on failure, None on success.
+        Idempotent if already started.
+        """
+        if self.bg_queue is not None or self.use_fallback:
+            return None  # already running
+
+        bg_queue, bg_stop, err = start_background_listening()
+        if err:
+            self.use_fallback = True
+            return err
+
+        self.bg_queue = bg_queue
+        self.bg_stop = bg_stop
+        self.active = True
+        return None
+
+    def stop(self) -> None:
+        """Deactivate voice mode and clean up the background thread."""
+        self.active = False
+        self.use_fallback = False
+        if self.bg_stop is not None:
+            try:
+                self.bg_stop()
+            except Exception:
+                pass
+        self.bg_queue = None
+        self.bg_stop = None
+
+    def get_phrase(self) -> str | None:
+        """
+        Return the next recognised phrase, or None if nothing is ready yet.
+        Uses the background listener when available, falls back to blocking listen().
+        Returns VOICE_ERROR on a hard failure.
+        """
+        if self.use_fallback:
+            return listen()  # blocks until speech or error
+        try:
+            return self.bg_queue.get_nowait()
+        except Exception:
+            return None  # queue empty – caller should retry
+
+
+# ── command dispatch ──────────────────────────────────────────────────────────
+
+def _dispatch_command(
+    text: str,
+    history: list[dict],
+    vs: VoiceState,
+) -> tuple[bool, bool]:
+    """
+    Handle a built-in command.
+
+    Returns:
+        (handled, should_quit)
+        handled     – True if *text* was a command (caller should not send to AI)
+        should_quit – True if the user asked to quit
+    """
+    cmd = text.strip().lower()
+
+    if cmd in ("quit", "exit"):
+        return True, True
+
+    if cmd == "clear":
+        history.clear()
+        speak("Memory cleared, Boss.")
+        return True, False
+
+    if cmd == "help":
+        print(HELP_TEXT)
+        speak("Available commands: voice, talk, mics, clear, help, and quit.")
+        return True, False
+
+    if cmd in ("mics", "microphones", "list mics"):
+        names = list_microphones()
+        if names:
+            print("  Available microphones:")
+            for i, name in enumerate(names, 1):
+                print(f"    {i}. {name}")
+        else:
+            print("  No microphones detected.")
+        return True, False
+
+    if cmd == "voice":
+        if vs.active or vs.use_fallback:
+            # Switch to text mode
+            vs.stop()
+            speak("Switched to text mode.")
+            print("  → Text mode on.")
+        else:
+            # Switch to voice mode
+            err = vs.start()
+            if err:
+                print(f"  ⚠️  {err}")
+                print("  → Falling back to direct speech capture.")
+                vs.active = True
+                speak("Voice mode on (direct capture).")
+            else:
+                speak("Voice mode on.")
+                print("  → Voice mode on. Listening…")
+        return True, False
+
+    if cmd == "talk":
+        # One-shot mic capture; only meaningful in text mode
+        phrase = listen()
+        if phrase == VOICE_ERROR or not phrase:
+            print("  ⚠️  Voice input failed (mic/STT not available).")
+            return True, False
+        print(f"  You (speech): {phrase}")
+        # Re-enter dispatch so the spoken phrase is processed as a message
+        return False, False  # caller will send 'phrase' to AI — see below
+
+    return False, False
+
+
+# ── main loop ─────────────────────────────────────────────────────────────────
 
 def run() -> None:
     parser = argparse.ArgumentParser(description="JARVIS Personal Assistant")
@@ -49,121 +193,78 @@ def run() -> None:
     print(BANNER)
 
     history: list[dict] = []
-    voice_mode = args.voice
+    vs = VoiceState()
 
     now = datetime.now().strftime("%A, %B %d  %I:%M %p")
-    greeting = (
+    speak(
         f"Good day, Boss. JARVIS is online. "
         f"Today is {now}. All systems nominal. How can I assist?"
     )
-    speak(greeting)
-    print("\n  Type 'talk' to speak to JARVIS  |  'quit' to exit\n")
+    print("\n  Type 'help' for commands  |  'quit' to exit\n")
     print("─" * 62)
 
-    bg_queue = None
-    bg_stop = None
-    listen_fallback = False
+    # Honour --voice flag
+    if args.voice:
+        err = vs.start()
+        if err:
+            print(f"  ⚠️  {err}")
+            print("  → Falling back to direct speech capture.")
+            vs.active = True
+            speak("Voice mode on (direct capture).")
+        else:
+            speak("Voice mode on.")
+            print("  → Voice mode on. Listening…")
 
     while True:
         try:
-            if voice_mode:
-                # Try to use a background listener (best experience) and fall
-                # back to a direct listen() call if unavailable.
-                if not listen_fallback and (bg_queue is None or bg_stop is None):
-                    bg_queue, bg_stop, err = start_background_listening()
-                    if err:
-                        print(f"  ⚠️  {err}")
-                        print("  → Falling back to direct speech capture (no ENTER required).")
-                        listen_fallback = True
-                        bg_queue = None
-                        bg_stop = None
-                    else:
-                        listen_fallback = False
-                        speak("Voice mode on.")
-                        print("\n  Listening… (say 'voice' to switch to text, 'quit' to exit)")
-                        time.sleep(0.2)
-                        continue
+            # ── get user input ────────────────────────────────────────────────
+            user_input: str | None = None
 
-                if listen_fallback:
-                    user_input = listen()
-                    if user_input == VOICE_ERROR:
-                        print("  ⚠️  Voice input failed (mic/STT not available). Switching to text mode.")
-                        voice_mode = False
-                        listen_fallback = False
-                        continue
-                    if not user_input:
-                        continue
-                else:
-                    try:
-                        user_input = bg_queue.get_nowait()
-                    except Exception:
-                        time.sleep(0.1)
-                        continue
-                    if not user_input:
-                        continue
-
-                if user_input.lower() in ("quit", "exit"):
-                    break
-                if user_input.lower() == "clear":
-                    history.clear()
-                    speak("Memory cleared.")
+            if vs.active or vs.use_fallback:
+                phrase = vs.get_phrase()
+                if phrase is None:
+                    time.sleep(0.05)
                     continue
-                if user_input.lower() == "voice":
-                    voice_mode = False
-                    listen_fallback = False
-                    try:
-                        if bg_stop is not None:
-                            bg_stop()
-                    except Exception:
-                        pass
-                    bg_queue = None
-                    bg_stop = None
-                    speak("Text mode on.")
-                    print("  → Switched to text mode.")
+                if phrase == VOICE_ERROR:
+                    print("  ⚠️  Voice input failed. Switching to text mode.")
+                    vs.stop()
                     continue
-
+                user_input = phrase
+                print(f"\nYou (voice) ▶  {user_input}")
             else:
                 print("\nYou ▶  ", end="", flush=True)
-                user_input = input().strip()
-                if not user_input:
+                raw = input()
+                if not raw.strip():
                     continue
-                if user_input.lower() in ("quit", "exit"):
-                    break
-                if user_input.lower() == "clear":
-                    history.clear()
-                    speak("Memory cleared.")
-                    continue
-                if user_input.lower() in ("list mics", "mics", "microphones"):
-                    try:
-                        names = list_microphones()
-                        print("Available microphones:")
-                        for idx, name in enumerate(names, start=1):
-                            print(f"  {idx}. {name}")
-                    except Exception as e:
-                        print(f"Error listing mics: {e}")
-                    continue
-                if user_input.lower() == "voice":
-                    voice_mode = True
-                    bg_queue = None
-                    bg_stop = None
-                    listen_fallback = False
-                    continue
-                if user_input.lower() == "talk":
-                    user_input = listen()
-                    if user_input == VOICE_ERROR:
+
+                # Handle the special 'talk' command before the generic dispatch
+                # so we can redirect the spoken phrase back as user_input.
+                if raw.strip().lower() == "talk":
+                    phrase = listen()
+                    if phrase == VOICE_ERROR or not phrase:
                         print("  ⚠️  Voice input failed (mic/STT not available).")
                         continue
-                    if not user_input:
-                        continue
-                    print(f"You (speech): {user_input}")
+                    print(f"  You (speech): {phrase}")
+                    user_input = phrase
+                else:
+                    user_input = raw.strip()
 
+            # ── built-in commands ─────────────────────────────────────────────
+            handled, should_quit = _dispatch_command(user_input, history, vs)
+            if should_quit:
+                break
+            if handled:
+                continue
+
+            # ── send to AI ────────────────────────────────────────────────────
             print("  ⚡  Thinking…", flush=True)
             history.append({"role": "user", "content": user_input})
             response, history = chat(history)
             speak(response)
 
-            if len(history) > 30:
-                history = history[-30:]
+            # Keep history bounded to avoid ballooning token costs
+            if len(history) > 40:
+                history = history[-40:]
 
         except KeyboardInterrupt:
             print("\n\n  ⚠️  Interrupted.")
@@ -173,14 +274,10 @@ def run() -> None:
             print(f"\n  ❌  Error: {exc}")
             speak("I encountered an error, Boss. Check the terminal for details.")
 
+    # ── shutdown ──────────────────────────────────────────────────────────────
     speak("JARVIS shutting down. Until next time, Boss.")
     print("\n  👋  Goodbye.\n")
-
-    if bg_stop is not None:
-        try:
-            bg_stop()
-        except Exception:
-            pass
+    vs.stop()
 
 
 if __name__ == "__main__":
