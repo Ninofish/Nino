@@ -1,0 +1,13 @@
+# ── AI / API ──────────────────────────────────────────────────────────────────
+openai>=1.30.0          # GPT-4o brain
+httpx>=0.27.0           # HTTP client for Fish.audio TTS + Brave Search
+
+# ── Speech recognition (STT) ──────────────────────────────────────────────────
+SpeechRecognition>=3.10.4   # Google STT wrapper
+pyaudio>=0.2.14             # Microphone access (needs PortAudio system lib)
+
+# ── Text-to-speech (offline fallback) ─────────────────────────────────────────
+pyttsx3>=2.90               # Offline TTS fallback (no API key needed)
+
+# ── Audio playback ────────────────────────────────────────────────────────────
+pygame>=2.5.0               # Cross-platform audio playback for Fish.audio MP3
