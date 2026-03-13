@@ -258,6 +258,8 @@ def chat(history: list[dict]) -> tuple[str, list[dict]]:
     """
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
+    max_tool_rounds = 10
+    tool_rounds = 0
     while True:
         response = _client.chat.completions.create(
             model="gpt-4o",
@@ -271,10 +273,12 @@ def chat(history: list[dict]) -> tuple[str, list[dict]]:
         msg = response.choices[0].message
         finish = response.choices[0].finish_reason
 
-        # Append assistant message (may include tool_calls)
-        messages.append(msg.model_dump(exclude_unset=False))
+        # Append assistant message – exclude_none=True avoids sending null
+        # fields (e.g. content=None when tool_calls present) which some
+        # OpenAI API versions reject or misinterpret.
+        messages.append(msg.model_dump(exclude_none=True))
 
-        if finish == "tool_calls" and msg.tool_calls:
+        if finish == "tool_calls" and msg.tool_calls and tool_rounds < max_tool_rounds:
             # Execute each requested tool and feed results back
             for tc in msg.tool_calls:
                 fn_name = tc.function.name
@@ -295,6 +299,7 @@ def chat(history: list[dict]) -> tuple[str, list[dict]]:
                     "tool_call_id": tc.id,
                     "content": tool_result,
                 })
+            tool_rounds += 1
             # Loop back for the next model response
             continue
 

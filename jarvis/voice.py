@@ -14,25 +14,36 @@ import os
 import queue
 import tempfile
 import threading
-import time
 
 # ── constants ────────────────────────────────────────────────────────────────
 VOICE_ERROR = "__VOICE_ERROR__"
 
+# Lazy-cached pyttsx3 engine (re-creating it on every speak() call causes
+# "run loop already started" RuntimeError on Linux/macOS).
+_pyttsx3_engine = None
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _play_audio_bytes(data: bytes, fmt: str = "mp3") -> None:
-    """Play raw audio bytes using pygame (cross-platform)."""
+    """Play raw audio bytes using pygame (cross-platform).
+
+    Uses pygame.mixer.music which supports MP3/OGG/WAV via SDL_mixer.
+    pygame.mixer.Sound only supports WAV, so it cannot be used for MP3.
+    """
     try:
         import pygame  # type: ignore
 
-        pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
-        sound = pygame.mixer.Sound(io.BytesIO(data))
-        channel = sound.play()
-        while channel.get_busy():
-            pygame.time.Clock().tick(20)
+        # channels=2 for stereo; Fish.audio returns stereo MP3
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+        buf = io.BytesIO(data)
+        pygame.mixer.music.load(buf)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(10)
+        pygame.mixer.music.unload()
     except Exception:
-        # Last-resort: write to temp file and use subprocess
+        # Last-resort: write to temp file and use ffplay
         try:
             import subprocess
 
@@ -103,17 +114,20 @@ def speak(text: str) -> None:
         _play_audio_bytes(audio, "mp3")
         return
 
-    # 2) pyttsx3
+    # 2) pyttsx3 (offline fallback – reuse cached engine to avoid RuntimeError)
+    global _pyttsx3_engine
     try:
         import pyttsx3  # type: ignore
 
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 165)
-        engine.setProperty("volume", 0.9)
-        engine.say(text)
-        engine.runAndWait()
+        if _pyttsx3_engine is None:
+            _pyttsx3_engine = pyttsx3.init()
+            _pyttsx3_engine.setProperty("rate", 165)
+            _pyttsx3_engine.setProperty("volume", 0.9)
+        _pyttsx3_engine.say(text)
+        _pyttsx3_engine.runAndWait()
         return
     except Exception:
+        _pyttsx3_engine = None  # reset so next call retries init
         pass
 
     # 3) Plain print (already printed above)

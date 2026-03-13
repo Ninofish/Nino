@@ -18,11 +18,11 @@ from datetime import datetime
 try:
     # Running as a script: python jarvis/main.py
     from brain import chat
-    from voice import VOICE_ERROR, listen, speak, start_background_listening
+    from voice import VOICE_ERROR, list_microphones, listen, speak, start_background_listening
 except ImportError:
     # Running as a module: python -m jarvis.main
     from .brain import chat
-    from .voice import VOICE_ERROR, listen, speak, start_background_listening
+    from .voice import VOICE_ERROR, list_microphones, listen, speak, start_background_listening
 
 BANNER = r"""
   ╔══════════════════════════════════════════════════════════╗
@@ -135,7 +135,6 @@ def run() -> None:
                     continue
                 if user_input.lower() in ("list mics", "mics", "microphones"):
                     try:
-                        from voice import list_microphones
                         names = list_microphones()
                         print("Available microphones:")
                         for idx, name in enumerate(names, start=1):
